@@ -1,0 +1,10 @@
+build/
+build-mic/
+build-app/
+.venv/
+__pycache__/
+ios/build/
+*.xcuserstate
+xcuserdata/
+artifacts/
+.DS_Store

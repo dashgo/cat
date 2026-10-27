@@ -1,6 +1,8 @@
 # 当前项目：猫语语音聊天 App
 
-当前开发板使用 app-firmware，已实现 Button 1 录音发送、App 聊天气泡回放、App 录音发送到开发板播放及本地历史。使用与启动见 [APP_SETUP.md](APP_SETUP.md)。以下是早期 USB 音箱阶段的历史记录，所述固件状态不代表当前状态。
+本机识别版现已加入 YAMNet 声音分类、Whisper Tiny 中文转写与意图映射猫叫合成，见 [LOCAL_AI.md](LOCAL_AI.md)。
+
+当前开发板使用 app-firmware，支持 Button 1 录音发送、App 聊天气泡回放、App 录音发送到开发板播放及本地历史。新增 Mac 本地猫叫类型识别与文字提示、普通话转写及互动猫叫生成，保持原固件和接线。架构与能力边界见 [LOCAL_AI_ARCHITECTURE.md](LOCAL_AI_ARCHITECTURE.md)，使用与启动见 [APP_SETUP.md](APP_SETUP.md)。以下是早期 USB 音箱阶段的历史记录，所述固件状态不代表当前状态。
 
 # CAT USB Speaker
 

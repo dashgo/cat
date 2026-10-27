@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>猫叫录音标注</title>
+<style>
+body{margin:0;background:#eff2ef;color:#21342c;font:15px system-ui,sans-serif}main{max-width:840px;margin:40px auto;padding:0 20px}h1{font-size:26px;margin-bottom:10px}p{color:#63756b;line-height:1.6}header{margin-bottom:28px}.tools{display:flex;gap:12px;align-items:center;flex-wrap:wrap}button{border:1px solid #cbd7cd;border-radius:9px;background:white;color:#21342c;padding:9px 15px;cursor:pointer}button.save{background:#b1e994}button.remove{color:#a13636;margin-left:10px}.notice{background:#e2eddc;border-radius:9px;padding:12px;font-size:13px}button:disabled{opacity:.5;cursor:default}article{background:white;padding:22px;border:1px solid #dce4dc;border-radius:14px;margin:18px 0}h2{font-size:15px;font-weight:500}audio{width:100%;margin:10px 0}label.field{display:block;margin:14px 0 6px}input[type=text],textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccd7cd;border-radius:8px;font:inherit}textarea{min-height:76px}small{color:#697a70}.state{margin-left:12px;font-size:13px}.prediction{font-size:14px;background:#f3f6f2;padding:12px;border-radius:8px}.pager{display:flex;align-items:center;gap:15px;margin:26px 0}#error{color:#ac3030}#summary{margin-left:auto}
+</style>
+<main><header><h1>猫叫录音标注</h1><p>回听终端上传的原音，标注声音类型、含义或当时情境。保存的人工标签会自动用于新上传猫叫的相似匹配，模型提示保留作参考。</p><div class="tools"><label><input type="checkbox" id="pending"> 只看未标注</label><label><input type="checkbox" id="trash"> 回收站</label><button id="refresh">刷新录音</button><small id="summary"></small></div><p class="notice">删除后移入回收站，并立即退出识别样本库，可恢复。有效标注录音参与本机相似匹配；样本不相似或标签冲突时继续使用模型提示。</p><p id="error" role="alert"></p></header><section id="records"></section><nav class="pager"><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button></nav><datalist id="labels"><option value="喵叫"><option value="呼噜"><option value="嘶叫"><option value="长嚎"><option value="呼唤 / 寻求关注"><option value="进食前"><option value="玩耍"><option value="紧张 / 保持距离"><option value="人声 / 非猫叫"><option value="不确定"></datalist></main>
+<script>
+let page=0,total=0;const dirty=new Set();
+const $=id=>document.getElementById(id);
+function element(tag,text){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node;}
+async function load(){
+ $('error').textContent='';
+ try{
+  const response=await fetch(`/api/recordings?page=${page}&pending=${$('pending').checked?1:0}&deleted=${$('trash').checked?1:0}`);
+  const data=await response.json();if(!response.ok)throw Error(data.error);
+  total=data.total;if(!data.items.length&&page>0){page--;return load();}$('records').replaceChildren();dirty.clear();
+  $('summary').textContent=`共 ${total} 条录音`;
+  for(const item of data.items){
+   const card=element('article');card.append(element('h2',`${new Date(item.timestamp*1000).toLocaleString('zh-CN')} · ${item.duration.toFixed(1)} 秒`));
+   const audio=element('audio');audio.controls=true;audio.preload='none';audio.src=`/audio/${encodeURIComponent(item.id)}.wav`;card.append(audio);
+   card.append(element('p',`识别结果：${item.prediction?.text||'暂无识别结果'}`));card.lastChild.className='prediction';
+   if(item.prediction?.match_diagnostics){const d=item.prediction.match_diagnostics;card.append(element('p',d.reason==='matched'?'已采用人工标注样本匹配':d.reason==='error'?'人工标注匹配暂不可用':'未采用人工标签：相似度不足或标签冲突'));}
+   if(item.prediction?.model_prediction?.text)card.append(element('small',`原模型提示：${item.prediction.model_prediction.text}`));
+   const labelId=`label-${item.id}`, contextId=`context-${item.id}`;
+   const labelTitle=element('label','人工标签');labelTitle.className='field';labelTitle.htmlFor=labelId;
+   const label=element('input');label.type='text';label.id=labelId;label.maxLength=100;label.setAttribute('list','labels');label.placeholder='选择或输入标签，例如：进食前 / 呼唤';label.value=item.label;
+   const contextTitle=element('label','现场情境 / 备注');contextTitle.className='field';contextTitle.htmlFor=contextId;
+   const context=element('textarea');context.id=contextId;context.maxLength=2000;context.placeholder='例如：饭前在食盆边，尾巴竖起';context.value=item.context;
+   if(item.deleted_at){label.disabled=true;context.disabled=true;}
+   const save=element('button','保存标注');save.disabled=!!item.deleted_at;save.className='save';const state=element('span',item.deleted_at?'已删除 · 不参与识别':item.label?'已标注 · 新录音自动匹配':'未标注');state.className='state';state.setAttribute('role','status');
+   for(const field of [label,context])field.addEventListener('input',()=>{dirty.add(item.id);state.textContent='尚未保存';});
+   save.onclick=async()=>{
+    save.disabled=true;label.disabled=true;context.disabled=true;state.textContent='正在保存…';
+    try{const res=await fetch(`/api/annotations/${encodeURIComponent(item.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:label.value,context:context.value})});const result=await res.json();if(!res.ok)throw Error(result.error);label.value=result.label;context.value=result.context;dirty.delete(item.id);state.textContent=result.label?'已保存 · 新录音自动匹配':'已保存 · 未标注';}
+    catch(error){state.textContent=`保存失败：${error.message}`;}finally{save.disabled=false;label.disabled=false;context.disabled=false;}
+   };
+   const remove=element('button',item.deleted_at?'恢复录音':'删除录音');remove.className='remove';
+   remove.onclick=async()=>{
+    if(!canLeave())return;
+    remove.disabled=true;
+    try{const res=await fetch(`/api/${item.deleted_at?'restore':'delete'}/${encodeURIComponent(item.id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const result=await res.json();if(!res.ok)throw Error(result.error);await load();}
+    catch(error){state.textContent=`操作失败：${error.message}`;remove.disabled=false;}
+   };
+   card.append(labelTitle,label,contextTitle,context,save,remove,state);$('records').append(card);
+  }
+  if(!data.items.length)$('records').append(element('p',$('trash').checked?'回收站为空。':$('pending').checked?'暂无未标注录音。':'暂无录音。按住开发板 Button 1 录音，松开后会自动归档到这里。'));
+  $('page').textContent=`第 ${page+1} / ${Math.max(1,Math.ceil(total/25))} 页`;$('prev').disabled=page===0;$('next').disabled=(page+1)*25>=total;
+ }catch(error){$('error').textContent=`加载失败：${error.message}`;}
+}
+function canLeave(){return dirty.size===0||confirm('存在编辑过的标注，请确认已保存。继续切换？');}
+$('refresh').onclick=()=>{if(canLeave())load();};$('pending').onchange=()=>{if(canLeave()){page=0;load();}else $('pending').checked=!$('pending').checked;};
+$('trash').onchange=()=>{if(canLeave()){page=0;$('pending').checked=false;$('pending').disabled=$('trash').checked;load();}else $('trash').checked=!$('trash').checked;};
+$('prev').onclick=()=>{if(page>0&&canLeave()){page--;load();}};$('next').onclick=()=>{if((page+1)*25<total&&canLeave()){page++;load();}};
+window.addEventListener('beforeunload',event=>{if(dirty.size){event.preventDefault();event.returnValue='';}});
+load();
+</script></html>

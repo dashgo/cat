@@ -8,3 +8,6 @@ ios/build/
 xcuserdata/
 artifacts/
 .DS_Store
+
+models/
+data/

@@ -8,6 +8,13 @@ struct VoiceMessage: Identifiable, Codable {
     var timestamp: Double
     var duration: Double
     var state: String
+    var translation: String?
+    var translationState: String?
+    var translationNote: String?
+    var catDuration: Double?
+    var resendState: String?
+    var resendCount: Int?
+    var phraseID: String?
 }
 
 @MainActor
@@ -24,6 +31,8 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var messages: [VoiceMessage] = []
     @Published var playingID: String?
     @Published var boardErrors = 0
+    @Published var aiReady = false
+    @Published var aiEnabled = false
     @Published var endpoint = "ws://127.0.0.1:8765"
 
     private var socket: URLSessionWebSocketTask?
@@ -34,6 +43,7 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var inputTap = false
     private var recordingPCM = Data()
     private var recordingTimer: Task<Void, Never>?
+    private var pendingResends: [String: String] = [:]
     private let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("VoiceChat", isDirectory: true)
 
@@ -43,8 +53,15 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             if let data = try? Data(contentsOf: directory.appendingPathComponent("history.json")) {
                 messages = try JSONDecoder().decode([VoiceMessage].self, from: data)
-                for i in messages.indices where ["sending", "playing"].contains(messages[i].state) {
+                for i in messages.indices where ["sending", "generating", "translating", "playing"].contains(messages[i].state) {
                     messages[i].state = "interrupted"
+                }
+                for i in messages.indices where messages[i].translationState == "pending" {
+                    messages[i].translationState = "failed"
+                    messages[i].translation = "识别中断，请重新录音"
+                }
+                for i in messages.indices where ["sending", "playing"].contains(messages[i].resendState ?? "") {
+                    messages[i].resendState = "interrupted"
                 }
             }
         } catch { errorText = "读取聊天记录失败：\(error.localizedDescription)" }
@@ -78,10 +95,18 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if talking { finishRecording(send: false) }
         receiveTask?.cancel(); receiveTask = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
-        connected = false; hardware = false; deviceRecording = false; deviceBusy = false
-        for i in messages.indices where ["sending", "playing"].contains(messages[i].state) {
+        connected = false; hardware = false; deviceRecording = false; deviceBusy = false; aiReady = false
+        for i in messages.indices where ["sending", "generating", "translating", "playing"].contains(messages[i].state) {
             messages[i].state = "interrupted"
         }
+        for i in messages.indices where messages[i].translationState == "pending" {
+            messages[i].translationState = "failed"
+            messages[i].translation = "识别中断，请重新录音"
+        }
+        for i in messages.indices where ["sending", "playing"].contains(messages[i].resendState ?? "") {
+            messages[i].resendState = "interrupted"
+        }
+        pendingResends.removeAll()
         saveHistory()
         message = "设备未连接，历史语音仍可播放"
     }
@@ -186,6 +211,66 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     func cancelRecording() { finishRecording(send: false) }
 
+    func sendPhrase(id phraseID: String, text: String) {
+        guard connected, hardware, aiReady, !deviceBusy, !deviceRecording, !talking else { return }
+        let id = UUID().uuidString
+        messages.append(VoiceMessage(id: id, source: "app", timestamp: Date().timeIntervalSince1970,
+                                     duration: 0, state: "sending", translation: text,
+                                     translationState: "pending", phraseID: phraseID))
+        deviceBusy = true; errorText = ""; stopPlayback(); saveHistory()
+        Task {
+            do { try await send(["type": "phrase_send", "id": id, "phrase_id": phraseID]) }
+            catch {
+                updateDelivery(id, state: "failed"); deviceBusy = false
+                if let i = messages.firstIndex(where: { $0.id == id }) {
+                    messages[i].translationState = "failed"; saveHistory()
+                }
+                errorText = "互动词语发送失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func resendCat(_ voice: VoiceMessage) {
+        guard connected, hardware, !deviceBusy, !deviceRecording, !talking,
+              voice.catDuration != nil, UUID(uuidString: voice.id) != nil,
+              let index = messages.firstIndex(where: { $0.id == voice.id }) else { return }
+        do {
+            let audio = try AVAudioFile(forReading: audioURL(voice.id + "-cat"),
+                                       commonFormat: .pcmFormatInt16, interleaved: true)
+            guard audio.processingFormat.sampleRate == 16000,
+                  audio.processingFormat.channelCount == 1,
+                  audio.length >= 1600, audio.length <= 960000,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat,
+                                               frameCapacity: AVAudioFrameCount(audio.length)) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            try audio.read(into: buffer)
+            guard let samples = buffer.int16ChannelData else { throw URLError(.cannotDecodeContentData) }
+            let pcm = Data(bytes: samples[0], count: Int(buffer.frameLength) * 2)
+            let requestID = UUID().uuidString
+            pendingResends[requestID] = voice.id
+            messages[index].resendState = "sending"
+            deviceBusy = true; errorText = ""; stopPlayback(); saveHistory()
+            Task {
+                do { try await send(["type": "cat_send", "id": requestID, "pcm": pcm.base64EncodedString()]) }
+                catch {
+                    receiveResendDelivery(requestID, state: "failed")
+                    errorText = "猫叫发送失败：\(error.localizedDescription)"
+                }
+            }
+        } catch { errorText = "读取合成猫叫失败：\(error.localizedDescription)" }
+    }
+
+    private func receiveResendDelivery(_ requestID: String, state: String) {
+        guard let originalID = pendingResends[requestID],
+              let i = messages.firstIndex(where: { $0.id == originalID }) else { return }
+        messages[i].resendState = state
+        if state == "played" { messages[i].resendCount = (messages[i].resendCount ?? 0) + 1 }
+        if ["played", "failed"].contains(state) { pendingResends.removeValue(forKey: requestID) }
+        deviceBusy = !pendingResends.isEmpty
+        saveHistory()
+    }
+
     @discardableResult
     private func addVoice(id: String, source: String, timestamp: Double, pcm: Data, state: String) -> Bool {
         guard !messages.contains(where: { $0.id == id }), pcm.count % 2 == 0,
@@ -193,6 +278,14 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
         // Use UUID file names only; incoming message IDs never become arbitrary paths.
         guard UUID(uuidString: id) != nil else { return false }
         do {
+            try saveAudio(pcm, id: id)
+            messages.append(VoiceMessage(id: id, source: source, timestamp: timestamp,
+                                         duration: Double(pcm.count) / 32000, state: state))
+            saveHistory(); return true
+        } catch { errorText = "保存语音失败：\(error.localizedDescription)"; return false }
+    }
+
+    private func saveAudio(_ pcm: Data, id: String) throws {
             var wav = Data("RIFF".utf8)
             func u32(_ value: UInt32) { var n = value.littleEndian; withUnsafeBytes(of: &n) { wav.append(contentsOf: $0) } }
             func u16(_ value: UInt16) { var n = value.littleEndian; withUnsafeBytes(of: &n) { wav.append(contentsOf: $0) } }
@@ -200,10 +293,6 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
             u32(16); u16(1); u16(1); u32(16000); u32(32000); u16(2); u16(16)
             wav.append(Data("data".utf8)); u32(UInt32(pcm.count)); wav.append(pcm)
             try wav.write(to: audioURL(id), options: .atomic)
-            messages.append(VoiceMessage(id: id, source: source, timestamp: timestamp,
-                                         duration: Double(pcm.count) / 32000, state: state))
-            saveHistory(); return true
-        } catch { errorText = "保存语音失败：\(error.localizedDescription)"; return false }
     }
 
     private func audioURL(_ id: String) -> URL { directory.appendingPathComponent(id + ".wav") }
@@ -212,23 +301,30 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
         catch { errorText = "保存聊天记录失败：\(error.localizedDescription)" }
     }
     private func updateDelivery(_ id: String, state: String) {
-        if let i = messages.firstIndex(where: { $0.id == id }) { messages[i].state = state; saveHistory() }
+        if let i = messages.firstIndex(where: { $0.id == id }) {
+            messages[i].state = state
+            if state == "failed", messages[i].phraseID != nil, messages[i].translationState == "pending" {
+                messages[i].translationState = "failed"
+            }
+            saveHistory()
+        }
     }
 
     func stopPlayback() { player?.stop(); player = nil; playingID = nil }
-    func playMessage(_ voice: VoiceMessage) {
+    func playMessage(_ voice: VoiceMessage, cat: Bool = false) {
         guard !talking else { return }
-        if playingID == voice.id { stopPlayback(); return }
+        let key = voice.id + (cat ? "-cat" : "")
+        if playingID == key { stopPlayback(); return }
         do {
             stopPlayback()
             let session = AVAudioSession.sharedInstance()
             // Reset output routing after recording, so replay uses the simulator speaker.
             try session.setCategory(.playback, mode: .default)
             try session.setActive(true)
-            let audio = try AVAudioPlayer(contentsOf: audioURL(voice.id))
+            let audio = try AVAudioPlayer(contentsOf: audioURL(key))
             audio.delegate = self; audio.volume = 1
             guard audio.prepareToPlay(), audio.play() else { throw URLError(.cannotDecodeContentData) }
-            player = audio; playingID = voice.id; errorText = ""
+            player = audio; playingID = key; errorText = ""
         } catch { errorText = "播放失败：\(error.localizedDescription)" }
     }
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -245,16 +341,42 @@ final class AudioLink: NSObject, ObservableObject, AVAudioPlayerDelegate {
                   let pcm = Data(base64Encoded: encoded) else { return }
             addVoice(id: id, source: "device", timestamp: object["timestamp"] as? Double ?? Date().timeIntervalSince1970,
                      pcm: pcm, state: "received")
+            if let i = messages.firstIndex(where: { $0.id == id }) {
+                messages[i].translationState = object["translation_state"] as? String
+                saveHistory()
+            }
+        case "translation":
+            guard let id = object["id"] as? String, UUID(uuidString: id) != nil,
+                  let i = messages.firstIndex(where: { $0.id == id }) else { return }
+            messages[i].translation = object["text"] as? String
+            messages[i].translationState = object["state"] as? String
+            messages[i].translationNote = object["note"] as? String ?? object["method"] as? String
+            if let encoded = object["cat_pcm"] as? String, let pcm = Data(base64Encoded: encoded),
+               pcm.count >= 3200, pcm.count <= 1920000, pcm.count % 2 == 0 {
+                do {
+                    try saveAudio(pcm, id: id + "-cat")
+                    if messages[i].phraseID != nil {
+                        try saveAudio(pcm, id: id)
+                        messages[i].duration = Double(pcm.count) / 32000
+                    }
+                    messages[i].catDuration = Double(pcm.count) / 32000
+                } catch { errorText = "保存猫叫失败：\(error.localizedDescription)" }
+            }
+            saveHistory()
         case "device_recording": deviceRecording = object["enabled"] as? Bool ?? false
         case "delivery":
             guard let id = object["id"] as? String, let state = object["state"] as? String else { return }
+            if pendingResends[id] != nil { receiveResendDelivery(id, state: state); return }
             updateDelivery(id, state: state)
-            deviceBusy = state == "playing"
+            deviceBusy = ["generating", "translating", "playing"].contains(state)
         case "error": errorText = object["message"] as? String ?? "设备错误"; deviceBusy = false
         case "status":
             connected = true; hardware = object["hardware_connected"] as? Bool ?? false
+            aiReady = object["ai_ready"] as? Bool ?? false
+            aiEnabled = object["ai_enabled"] as? Bool ?? false
             deviceRecording = object["device_recording"] as? Bool ?? false
-            deviceBusy = object["talking"] as? Bool ?? false
+            deviceBusy = (object["talking"] as? Bool ?? false) || !pendingResends.isEmpty
+                || messages.contains { ["sending", "generating", "translating", "playing"].contains($0.state) }
             boardErrors = (object["board"] as? [String: Any])?["errors"] as? Int ?? 0
             if !hardware && talking { cancelRecording() }
             if !talking { message = hardware ? "按住开发板 Button 1 发送语音" : "桥接已连接，等待开发板" }

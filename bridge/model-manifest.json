@@ -1,0 +1,44 @@
+[
+  {
+    "path": "yamnet/yamnet.tflite",
+    "url": "https://storage.googleapis.com/audioset/yamnet.tflite",
+    "sha256": "e193da5676a2fdb7a3702c10fba62aa27d76f64e4534467443811c1a2ff1667d",
+    "bytes": 16061524
+  },
+  {
+    "path": "yamnet/class_map.csv",
+    "url": "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv",
+    "sha256": "cdf24d193e196d9e95912a2667051ae203e92a2ba09449218ccb40ef787c6df2",
+    "bytes": 14096
+  },
+  {
+    "path": "yamnet/miaow_16k.wav",
+    "url": "https://storage.googleapis.com/audioset/miaow_16k.wav",
+    "sha256": "f2a00c3a3e7596f1541c4cbd59d6034a674b76ae9c53c8784882345c044da558",
+    "bytes": 215546
+  },
+  {
+    "path": "whisper-tiny/config.json",
+    "url": "https://huggingface.co/Systran/faster-whisper-tiny/resolve/d90ca5fe260221311c53c58e660288d3deb8d356/config.json",
+    "sha256": "a73a28cdfe1c43ccc7202fa333d1f89c202477271407ae9a7f19afa52039cac8",
+    "bytes": 2249
+  },
+  {
+    "path": "whisper-tiny/model.bin",
+    "url": "https://huggingface.co/Systran/faster-whisper-tiny/resolve/d90ca5fe260221311c53c58e660288d3deb8d356/model.bin",
+    "sha256": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1",
+    "bytes": 75538270
+  },
+  {
+    "path": "whisper-tiny/tokenizer.json",
+    "url": "https://huggingface.co/Systran/faster-whisper-tiny/resolve/d90ca5fe260221311c53c58e660288d3deb8d356/tokenizer.json",
+    "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+    "bytes": 2203239
+  },
+  {
+    "path": "whisper-tiny/vocabulary.txt",
+    "url": "https://huggingface.co/Systran/faster-whisper-tiny/resolve/d90ca5fe260221311c53c58e660288d3deb8d356/vocabulary.txt",
+    "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+    "bytes": 459861
+  }
+]

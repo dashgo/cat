@@ -1,0 +1,4 @@
+-r requirements.txt
+ai-edge-litert==2.3.0
+faster-whisper==1.2.1
+numpy==2.5.4
